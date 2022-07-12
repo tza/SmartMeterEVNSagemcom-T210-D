@@ -13,6 +13,8 @@ import json
 import os
 import getopt
 
+from datetime import datetime
+
 try:
 	configFile = open(os.path.dirname(os.path.realpath(__file__)) + '/config.json')
 	config = json.load(configFile)
@@ -31,20 +33,13 @@ for opt, arg in opts:
         verbose = 1
 
 # config Kontrolle
-neededConfig = ['port', 'baudrate', 'printValue', 'useMQTT', 'useREST', 'evn_schluessel']
+neededConfig = ['port', 'baudrate', 'printValue', 'useREST', 'evn_schluessel']
 for conf in neededConfig:
     if conf not in config:
         print(conf + ' missing in config file!')
         sys.exit(3)
 
-MQTTneededConfig = ['MQTTBroker', 'MQTTuser', 'MQTTpasswort', 'MQTTport']
-if config['useMQTT']:
-    for conf in MQTTneededConfig:
-        if conf not in config:
-            print(conf + ' missing in config file!')
-            sys.exit(3)
-
-RESTneededConfig = ['meter', 'RESTurl', 'RESTuser', 'RESTpasswort']
+RESTneededConfig = ['RESTurl', 'RESTtoken']
 if config['useREST']:
     for conf in RESTneededConfig:
         if conf not in config:
@@ -83,21 +78,9 @@ units = {
 }
 
 
-#MQTT Init
-if config['useMQTT']:
-    import paho.mqtt.client as mqtt
-    try:
-        client = mqtt.Client("SmartMeter")
-        client.username_pw_set(config['mqttuser'], config['mqttpasswort'])
-        client.connect(config['mqttBroker'], config['mqttport'])
-    except:
-        print("Die Ip Adresse des Brokers ist falsch!")
-        sys.exit()
-
 # REST API
 if config['useREST']:
     import requests
-    from requests.auth import HTTPBasicAuth
 
     
 tr = GXDLMSTranslator(TranslatorOutputType.SIMPLE_XML)
@@ -108,9 +91,7 @@ serIn = serial.Serial( port=config['port'],
          stopbits=serial.STOPBITS_ONE
 )
 
-if serIn.isOpen() == True:
-    print("Port is already in use!")
-    sys.exit(3)
+count=0;
 
 while 1:
     sleep(4.7)
@@ -145,9 +126,13 @@ while 1:
         results_enum = soup.find_all('enum')
 
     except BaseException as err:
+        print("Zeit: ", datetime.now().time())
         print("Fehler: ", format(err))
         continue
-       
+    
+    count=count+1;
+    if count>=5000:
+        count=0;
 
     try:
         #Wirkenergie A+ in Wattstunden
@@ -210,48 +195,32 @@ while 1:
             print()
             print()
         
-        #MQTT
-        if config['useMQTT']:
-            client.publish("Smartmeter/WirkenergieP",WirkenergieP)
-            client.publish("Smartmeter/WirkenergieN",WirkenergieN)
-            client.publish("Smartmeter/MomentanleistungP",MomentanleistungP)
-            client.publish("Smartmeter/MomentanleistungN",MomentanleistungN)
-            client.publish("Smartmeter/Momentanleistung",MomentanleistungP - MomentanleistungN)
-            client.publish("Smartmeter/SpannungL1",SpannungL1)
-            client.publish("Smartmeter/SpannungL2",SpannungL2)
-            client.publish("Smartmeter/SpannungL3",SpannungL3)
-            client.publish("Smartmeter/StromL1",StromL1)
-            client.publish("Smartmeter/StromL2",StromL2)
-            client.publish("Smartmeter/StromL3",StromL3)
-            client.publish("Smartmeter/Leistungsfaktor",Leistungsfaktor)
-
         # REST API
-        if config['useREST']:
-            dataJson = {}
-            dataJson['meter'] = config['meter']
-            dataJson['data'] = {}
-            dataJson['data']['WirkenergieP'] = WirkenergieP
-            dataJson['data']['WirkenergieN'] = WirkenergieN
-            dataJson['data']['MomentanleistungP'] = MomentanleistungP
-            dataJson['data']['MomentanleistungN'] = MomentanleistungN
-            dataJson['data']['SpannungL1'] = SpannungL1
-            dataJson['data']['SpannungL2'] = SpannungL2
-            dataJson['data']['SpannungL3'] = SpannungL3
-            dataJson['data']['StromL1'] = StromL1
-            dataJson['data']['StromL2'] = StromL2
-            dataJson['data']['StromL3'] = StromL3
-            dataJson['data']['Leistungsfaktor'] = Leistungsfaktor
-            jsonStr = json.dumps(dataJson)
+        if config['useREST'] and count%3==0:
+            dataStr='smartmeter,host=PIone '
+            dataStr+='WirkenergieP='+str(WirkenergieP)
+            dataStr+=',WirkenergieN='+str(WirkenergieN)
+            dataStr+=',MomentanleistungP='+str(MomentanleistungP)
+            dataStr+=',MomentanleistungN='+str(MomentanleistungN)
+            dataStr+=',SpannungL1='+str(SpannungL1)
+            dataStr+=',SpannungL2='+str(SpannungL2)
+            dataStr+=',SpannungL3='+str(SpannungL3)
+            dataStr+=',StromL1='+str(StromL1)
+            dataStr+=',StromL2='+str(StromL2)
+            dataStr+=',StromL3='+str(StromL3)
+            dataStr+=',Leistungsfaktor='+str(Leistungsfaktor)
 
             if verbose:
-                print(jsonStr+"\n")
+                print(dataStr+"\n")
 
             url = config['RESTurl']
 
-            resp = requests.post(url, data = jsonStr, auth = HTTPBasicAuth(config['RESTuser'], config['RESTpass']))
-            if resp.status_code != 200:
+            Headers={'Authorization': 'Token ' + config['RESTtoken']}
+
+            resp = requests.post(url, headers=Headers, data = dataStr)
+            if resp.status_code != 200 and resp.status_code != 204:
                 print('Error while sending to REST API:')
-                print(jsonStr)
+                print(dataStr)
                 print('Status Code: ' + str(resp.status_code))
                 print(resp.text)
 
@@ -260,6 +229,7 @@ while 1:
                 print(resp.text)
 
     except BaseException as err:
+        print("Zeit: ", datetime.now().time())
         print("Fehler: ", format(err))
         continue
-
+    
