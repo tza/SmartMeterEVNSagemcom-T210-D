@@ -126,7 +126,7 @@ while 1:
         results_enum = soup.find_all('enum')
 
     except BaseException as err:
-        print("Zeit: ", datetime.now().time())
+        print("Zeit: ", datetime.now())
         print("Fehler: ", format(err))
         continue
     
@@ -229,7 +229,7 @@ while 1:
                 print(resp.text)
 
     except BaseException as err:
-        print("Zeit: ", datetime.now().time())
+        print("Zeit: ", datetime.now())
         print("Fehler: ", format(err))
         continue
     
