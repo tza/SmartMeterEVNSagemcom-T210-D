@@ -8,7 +8,7 @@ from bs4 import BeautifulSoup
 from Cryptodome.Cipher import AES
 from time import sleep
 from gurux_dlms.TranslatorOutputType import TranslatorOutputType
-
+import xml.etree.ElementTree as ET
 import json
 import os
 import getopt
@@ -83,47 +83,77 @@ if config['useREST']:
     import requests
 
     
-tr = GXDLMSTranslator(TranslatorOutputType.SIMPLE_XML)
-serIn = serial.Serial( port=config['port'],
+tr = GXDLMSTranslator()
+ser = serial.Serial( port=config['port'],
          baudrate=config['baudrate'],
          bytesize=serial.EIGHTBITS,
          parity=serial.PARITY_NONE,
          stopbits=serial.STOPBITS_ONE
 )
 
+# Werte im XML File
+octet_string_values = {}
+octet_string_values['0100010800FF'] = 'WirkenergieP'
+octet_string_values['0100020800FF'] = 'WirkenergieN'
+octet_string_values['0100010700FF'] = 'MomentanleistungP'
+octet_string_values['0100020700FF'] = 'MomentanleistungN'
+octet_string_values['0100200700FF'] = 'SpannungL1'
+octet_string_values['0100340700FF'] = 'SpannungL2'
+octet_string_values['0100480700FF'] = 'SpannungL3'
+octet_string_values['01001F0700FF'] = 'StromL1'
+octet_string_values['0100330700FF'] = 'StromL2'
+octet_string_values['0100470700FF'] = 'StromL3'
+octet_string_values['01000D0700FF'] = 'Leistungsfaktor'
+
+def evn_decrypt(frame, key, systemTitel, frameCounter):
+    frame = unhexlify(frame)
+    encryption_key = unhexlify(key)
+    init_vector = unhexlify(systemTitel + frameCounter)
+    cipher = AES.new(encryption_key, AES.MODE_GCM, nonce=init_vector)
+    return cipher.decrypt(frame).hex()
+
 count=0;
 
 while 1:
-    sleep(4.7)
-    daten = recv(serIn)
-    if daten != '':
-        daten = daten.hex()
-    if (len(daten) < 560):
-        if verbose:
-            print("Only " + str(len(daten)) + " bytes received... waiting")
-        continue
-    if daten == '' or daten[0:8] != "68010168":
-        if verbose:
-            print ("Invalid Start Bytes... waiting")
-        continue
+    daten = ser.read(size=282).hex()    
+    mbusstart = daten[0:8]
+    frameLen=int("0x" + mbusstart[2:4],16)
     systemTitel = daten[22:38]
     frameCounter = daten[44:52]
-    frame = daten[52:560]
+    frame = daten[52:12+frameLen*2]
+    if mbusstart[0:2] == "68" and mbusstart[2:4] == mbusstart[4:6] and mbusstart[6:8] == "68" :
+        print("Daten ok")
+    else:
+        print("wrong M-Bus Start, restarting")
+        sleep(2.5)
+        ser.flushOutput()
+        ser.close()
+        ser.open()
+        continue
 
-    frame = unhexlify(frame)
-    encryption_key = unhexlify(config['evn_schluessel'])
-    init_vector = unhexlify(systemTitel + frameCounter)
-    cipher = AES.new(encryption_key, AES.MODE_GCM, nonce=init_vector)
-    apdu = cipher.decrypt(frame).hex()    
+
+    apdu = evn_decrypt(frame,config['evn_schluessel'],systemTitel,frameCounter)
 
     try:
         xml = tr.pduToXml(apdu,)
-        soup = BeautifulSoup(xml, 'lxml')
-        results_32 = soup.find_all('uint32')
-        results_16 = soup.find_all('uint16')
-        results_int16 = soup.find_all('int16')
-        results_int8 = soup.find_all('int8')
-        results_enum = soup.find_all('enum')
+        #print("xml: ",xml)
+
+        root = ET.fromstring(xml)
+        found_lines = []
+        momentan = []
+
+        items = list(root.iter())
+        for i, child in enumerate(items):
+            if child.tag == 'OctetString' and 'Value' in child.attrib:
+                value = child.attrib['Value']
+                if value in octet_string_values.keys():
+                    if ('Value' in items[i+1].attrib):
+                        if value in ['0100010700FF', '0100020700FF']:
+                            # special handling for momentanleistung
+                            momentan.append(int(items[i+1].attrib['Value'], 16))
+                        found_lines.append({'key': octet_string_values[value], 'value': int(items[i+1].attrib['Value'], 16)});
+
+        #print(found_lines)
 
     except BaseException as err:
         print("Zeit: ", datetime.now())
@@ -135,63 +165,50 @@ while 1:
         count=0;
 
     try:
-        #Wirkenergie A+ in Wattstunden
-        WirkenergieP = int(str(results_32[0].get('value')),16)*10**s8(str(results_int8[0].get('value')))
-        WirkenergiePUnit = units[int(results_enum[0].get('value'), 16)]
+        if len(momentan) == 2:
+            found_lines.append({'key': 'Momentanleistung', 'value': momentan[0]-momentan[1]})
 
-        #Wirkenergie A- in Wattstunden
-        WirkenergieN = int(str(results_32[1].get('value')),16)*10**s8(str(results_int8[1].get('value')))
-        WirkenergieNUnit = units[int(results_enum[1].get('value'), 16)]
-        
-        #Momentanleistung P+ in Watt
-        MomentanleistungP = int(str(results_32[2].get('value')),16)*10**s8(str(results_int8[2].get('value')))
-        MomentanleistungPUnit = units[int(results_enum[2].get('value'), 16)]
+        for element in found_lines:
+            if element['key'] == "WirkenergieP":
+               WirkenergieP = element['value']/1000
+            if element['key'] == "WirkenergieN":
+               WirkenergieN = element['value']/1000
 
-        #Momentanleistung P- in Watt
-        MomentanleistungN = int(str(results_32[3].get('value')),16)*10**s8(str(results_int8[3].get('value')))
-        MomentanleistungNUnit = units[int(results_enum[3].get('value'), 16)]
-        
-        #Spannung L1
-        SpannungL1 = int(str(results_16[0].get('value')),16)*10**s8(str(results_int8[4].get('value')))
-        SpannungL1Unit = units[int(results_enum[4].get('value'), 16)]
-        
-        #Spannung L2
-        SpannungL2 = int(str(results_16[1].get('value')),16)*10**s8(str(results_int8[5].get('value')))
-        SpannungL2Unit = units[int(results_enum[5].get('value'), 16)]
-        
-        #Spannung L3
-        SpannungL3 = int(str(results_16[2].get('value')),16)*10**s8(str(results_int8[6].get('value')))
-        SpannungL3Unit = units[int(results_enum[6].get('value'), 16)]
-        
-        #Strom L1
-        StromL1 = int(str(results_16[3].get('value')),16)*10**s8(str(results_int8[7].get('value')))
-        StromL1Unit = units[int(results_enum[7].get('value'), 16)]
-        
-        #Strom L2
-        StromL2 = int(str(results_16[4].get('value')),16)*10**s8(str(results_int8[8].get('value')))
-        StromL2Unit = units[int(results_enum[8].get('value'), 16)]
-        
-        #Strom L3
-        StromL3 = int(str(results_16[5].get('value')),16)*10**s8(str(results_int8[9].get('value')))
-        StromL3Unit = units[int(results_enum[9].get('value'), 16)]
-        
-        #Leistungsfaktor
-        Leistungsfaktor = s16(str(results_int16[0].get('value')))*10**s8(str(results_int8[10].get('value')))
-        LeistungsfaktorUnit = units[int(results_enum[10].get('value'), 16)]
+            if element['key'] == "MomentanleistungP":
+               MomentanleistungP = element['value']
+            if element['key'] == "MomentanleistungN":
+               MomentanleistungN = element['value']
+
+            if element['key'] == "SpannungL1":
+               SpannungL1 = element['value']*0.1
+            if element['key'] == "SpannungL2":
+               SpannungL2 = element['value']*0.1
+            if element['key'] == "SpannungL3":
+               SpannungL3 = element['value']*0.1
+
+            if element['key'] == "StromL1":
+               StromL1 = element['value']*0.01
+            if element['key'] == "StromL2":
+               StromL2 = element['value']*0.01
+            if element['key'] == "StromL3":
+               StromL3 = element['value']*0.01
+
+            if element['key'] == "Leistungsfaktor":
+               Leistungsfaktor = element['value']*0.001
                         
         if config['printValue'] or verbose:
-            print('Wirkenergie+: ' + str(WirkenergieP) + WirkenergiePUnit)
-            print('Wirkenergie-: ' + str(WirkenergieN) + WirkenergieNUnit)
-            print('Momentanleistung+: ' + str(MomentanleistungP) + MomentanleistungPUnit)
-            print('Momentanleistung-: ' + str(MomentanleistungN) + MomentanleistungNUnit)
-            print('Spannung L1: ' + str(SpannungL1) + SpannungL1Unit)
-            print('Spannung L2: ' + str(SpannungL2) + SpannungL2Unit)
-            print('Spannung L3: ' + str(SpannungL3) + SpannungL3Unit)
-            print('Strom L1: ' + str(StromL1) + StromL1Unit)
-            print('Strom L2: ' + str(StromL2) + StromL2Unit)
-            print('Strom L3: ' + str(StromL3) + StromL3Unit)
-            print('Leistungsfaktor: ' + str(Leistungsfaktor) + LeistungsfaktorUnit)
-            print('Momentanleistung: ' + str(MomentanleistungP-MomentanleistungN) + MomentanleistungPUnit)
+            print('Wirkenergie+: ' + str(WirkenergieP))
+            print('Wirkenergie-: ' + str(WirkenergieN))
+            print('Momentanleistung+: ' + str(MomentanleistungP))
+            print('Momentanleistung-: ' + str(MomentanleistungN))
+            print('Spannung L1: ' + str(SpannungL1))
+            print('Spannung L2: ' + str(SpannungL2))
+            print('Spannung L3: ' + str(SpannungL3))
+            print('Strom L1: ' + str(StromL1))
+            print('Strom L2: ' + str(StromL2))
+            print('Strom L3: ' + str(StromL3))
+            print('Leistungsfaktor: ' + str(Leistungsfaktor))
+            print('Momentanleistung: ' + str(MomentanleistungP-MomentanleistungN))
             print()
             print()
         
