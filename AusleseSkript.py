@@ -5,13 +5,23 @@ import serial
 from datetime import datetime
 from binascii import unhexlify
 from gurux_dlms.GXDLMSTranslator import GXDLMSTranslator
-from gurux_dlms.TranslatorOutputType import TranslatorOutputType
 from bs4 import BeautifulSoup
 from Cryptodome.Cipher import AES
 from time import sleep
 import xml.etree.ElementTree as ET
 import time
+import getopt
+import requests
 
+verbose = 0
+try:
+    opts, args = getopt.getopt(sys.argv[1:],"v")
+except getopt.GetoptError:
+    print('test.py [-v]')
+    sys.exit(2)
+for opt, arg in opts:
+    if opt == '-v':
+        verbose = 1
 
 #Aktuellen Dateipfad finden und mit config.json erweitern
 configFile = os.path.dirname(os.path.realpath(__file__)) + '/config.json' 
@@ -30,19 +40,22 @@ if not os.access(configFile, os.R_OK):
 config = json.load(open(configFile))
 
 # Überprüfung ob alle Daten in der Config vorhanden sind
-neededConfig = ['port', 'baudrate', 'key', 'printValue', 'useMQTT', 'mqttbrokerip', 'mqttbrokerport', 'mqttbrokeruser', 'mqttbrokerpasswort', 'useInfluxdb', 'influxdbip', 'influxdbport']
+neededConfig = ['port', 'baudrate', 'key', 'useMQTT', 'mqttbrokerip', 'mqttbrokerport', 'mqttbrokeruser', 'mqttbrokerpasswort', 'useInfluxdb', 'influxdbip', 'influxdbport']
 for conf in neededConfig:
     if conf not in config:
         print(conf + ' Fehlt im Configfile!')
         sys.exit(3)
 
+RESTneededConfig = ['RESTurl', 'RESTtoken']
+if config['useREST']:
+    for conf in RESTneededConfig:
+        if conf not in config:
+            print(conf + ' missing in config file!')
+            sys.exit(4)
 
 
 #Schlüssel eingeben zB. "36C66639E48A8CA4D6BC8B282A793BBB"
 key = config['key']
-
-#Aktulle Werte auf Console ausgeben (True | False)
-printValue = config['printValue']
 
 #MQTT Verwenden (True | False) und Grundeinstellungen
 useMQTT = config['useMQTT']
@@ -121,7 +134,8 @@ while 1:
     frameCounter = daten[44:52]
     frame = daten[52:12+frameLen*2]
     if mbusstart[0:2] == "68" and mbusstart[2:4] == mbusstart[4:6] and mbusstart[6:8] == "68" :
-        print("Daten ok")
+        if verbose :
+            print("Daten ok")
     else:
         print("wrong M-Bus Start, restarting")
         sleep(2.5)
@@ -194,7 +208,6 @@ while 1:
         print("Fehler: ", format(err))
         continue;    
     
-
     #MQTT
     if useMQTT:
         connected = False
@@ -207,7 +220,7 @@ while 1:
                 time.sleep(2)
                 
 
-    if printValue:
+    if verbose:
         now = datetime.now()
         print("\n\t\t*** KUNDENSCHNITTSTELLE ***\n\nOBIS Code\tBezeichnung\t\t\t Wert")
         print(now.strftime("%d.%m.%Y %H:%M:%S"))
@@ -286,9 +299,40 @@ while 1:
             }
             ]
             clientinfluxdb.write_points(json_body,database=influxdbdatenbank)
+            
+        if config['useREST']:
+            dataStr='smartmeter,host=PIone '
+            dataStr+='WirkenergieP='+str(WirkenergieP)
+            dataStr+=',WirkenergieN='+str(WirkenergieN)
+            dataStr+=',MomentanleistungP='+str(MomentanleistungP)
+            dataStr+=',MomentanleistungN='+str(MomentanleistungN)
+            dataStr+=',SpannungL1='+str(SpannungL1)
+            dataStr+=',SpannungL2='+str(SpannungL2)
+            dataStr+=',SpannungL3='+str(SpannungL3)
+            dataStr+=',StromL1='+str(StromL1)
+            dataStr+=',StromL2='+str(StromL2)
+            dataStr+=',StromL3='+str(StromL3)
+            dataStr+=',Leistungsfaktor='+str(Leistungsfaktor)
+
+            if verbose:
+                print(dataStr+"\n")
+
+            url = config['RESTurl']
+
+            Headers={'Authorization': 'Token ' + config['RESTtoken']}
+
+            resp = requests.post(url, headers=Headers, data = dataStr)
+            if resp.status_code != 200 and resp.status_code != 204:
+                print('Error while sending to REST API:')
+                print(dataStr)
+                print('Status Code: ' + str(resp.status_code))
+                print(resp.text)
+
+            if verbose:
+                print("HTTP Resp Code: " + str(resp.status_code) + "\n")
+                print(resp.text)            
     except BaseException as err:
         print("Es ist ein Fehler aufgetreten.")
         print()
         print("Fehler: ", format(err))
         sys.exit()
-
