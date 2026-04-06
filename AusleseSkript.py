@@ -12,6 +12,7 @@ import xml.etree.ElementTree as ET
 import time
 import getopt
 import requests
+import sdnotify
 
 verbose = 0
 try:
@@ -126,6 +127,10 @@ def evn_decrypt(frame, key, systemTitel, frameCounter):
     cipher = AES.new(encryption_key, AES.MODE_GCM, nonce=init_vector)
     return cipher.decrypt(frame).hex()
 
+
+n = sdnotify.SystemdNotifier()
+n.notify("READY=1")
+
 while 1:
     daten = ser.read(size=282).hex()    
     mbusstart = daten[0:8]
@@ -207,6 +212,8 @@ while 1:
     except BaseException as err:
         print("Fehler: ", format(err))
         continue;    
+    
+    n.notify("WATCHDOG=1")
     
     #MQTT
     if useMQTT:

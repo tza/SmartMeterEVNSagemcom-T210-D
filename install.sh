@@ -31,4 +31,5 @@ sudo pip3 install paho-mqtt==1.6.1 --break-system-packages
 sudo pip3 install pyserial --break-system-packages
 sudo pip3 install cryptography --break-system-packages
 sudo pip3 install html5lib --break-system-packages
+sudo pip3 install sdnotify --break-system-packages
 #sudo pip3 install influxdb --break-system-packages
