@@ -128,6 +128,7 @@ while 1:
         ser.flushOutput()
         ser.close()
         ser.open()
+        continue
 
     apdu = evn_decrypt(frame,key,systemTitel,frameCounter)
     if apdu[0:4] != "0f80" :
